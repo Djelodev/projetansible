@@ -15,7 +15,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install YAML validator
-        run: python -m pip install pyyaml
-      - name: Validate syntax
+      - name: Install validators
+        run: python -m pip install pyyaml ansible-core
+      - name: Validate YAML and Vagrant syntax
         run: python scripts/validate-static.py
+      - name: Check Ansible playbook syntax
+        run: |
+          ansible-playbook -i ansible-playbooks/etc/hosts --syntax-check ansible-playbooks/playbooks/site.yml
+          ansible-playbook -i ansible-playbooks/etc/hosts --syntax-check ansible-playbooks/playbooks/verify_cluster.yml
+          ansible-playbook -i ansible-playbooks/etc/hosts --syntax-check ansible-playbooks/playbooks/install_argocd.yml
