@@ -1,0 +1,48 @@
+---
+- name: Vérifier le cluster Kubernetes
+  hosts: k8s_cplanes_init
+  become: true
+  tasks:
+    - name: Lister les nœuds
+      ansible.builtin.command: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nodes
+      changed_when: false
+
+    - name: Afficher les nœuds
+      ansible.builtin.debug:
+        var: nodes.stdout_lines
+
+    - name: Lister les Pods
+      ansible.builtin.command: kubectl get pods -A -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: pods
+      changed_when: false
+
+    - name: Afficher les Pods
+      ansible.builtin.debug:
+        var: pods.stdout_lines
+
+    - name: Consulter le PV et le PVC
+      ansible.builtin.command: kubectl get storageclass,pv,pvc
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: storage
+      changed_when: false
+
+    - name: Afficher le stockage
+      ansible.builtin.debug:
+        var: storage.stdout_lines
+
+    - name: Lire le contenu écrit dans le volume
+      ansible.builtin.command: kubectl exec test-nfsha-pod -- cat /data/test.txt
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nfs_content
+      changed_when: false
+
+    - name: Afficher le résultat NFS
+      ansible.builtin.debug:
+        var: nfs_content.stdout
