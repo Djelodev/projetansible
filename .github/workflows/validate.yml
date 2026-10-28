@@ -1,0 +1,21 @@
+name: Validate lab configuration
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install YAML validator
+        run: python -m pip install pyyaml
+      - name: Validate syntax
+        run: python scripts/validate-static.py
