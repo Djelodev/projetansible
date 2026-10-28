@@ -1,65 +1,72 @@
-# Projet Kubernetes — Vagrant, Ansible, HAProxy et NFS
+# Projet Ansible — Infrastructure Kubernetes multi-nœuds
 
-Ce dépôt accueille un laboratoire pédagogique d'Infrastructure as Code : 7 VM Ubuntu, un cluster Kubernetes kubeadm multi-nœuds, un endpoint API HAProxy, du stockage NFS persistant et un déploiement ArgoCD.
+Laboratoire pédagogique **Infrastructure as Code** combinant Vagrant, VirtualBox, Ansible, kubeadm, HAProxy, NFS et ArgoCD.
 
 ## Architecture
 
-| Machine | IP | Rôle |
-|---|---|---|
-| infra01 | 192.168.56.2 | Administration Ansible et DNS |
-| k8s-cplane01 | 192.168.56.4 | Control plane initial |
-| k8s-cplane02 | 192.168.56.5 | Second control plane |
+| VM | Adresse Host-Only | Fonction |
+|---|---:|---|
+| infra01 | 192.168.56.2 | Administration Ansible et DNS BIND9 |
+| k8s-cplane01 | 192.168.56.4 | Initialisation du cluster Kubernetes |
+| k8s-cplane02 | 192.168.56.5 | Second control-plane |
 | k8s-worker01 | 192.168.56.6 | Worker Kubernetes |
 | k8s-worker02 | 192.168.56.7 | Worker Kubernetes |
-| hap01 | 192.168.56.8 | Équilibrage TCP de l'API sur 6443 |
-| nfsha | 192.168.56.9 | Stockage partagé NFS |
+| hap01 | 192.168.56.8 | Endpoint de l'API Kubernetes sur TCP/6443 |
+| nfsha | 192.168.56.9 | Stockage NFS sous /srv/kubernetes |
 
-## Contenu
+## Démarrage
 
-- `Vagrantfile` : création des sept machines VirtualBox.
-- `scripts/` : installation Ansible, initialisation SSH et validation statique.
-- `ansible-playbooks/` : inventaire, dépendances, rôles et playbooks.
-- `ansible-playbooks/manifests/` : ressources de test de stockage NFS.
-- `docs/` : architecture, déploiement, diagnostic et présentation orale.
-- `.github/workflows/validate.yml` : validation statique à chaque push/pull request.
+Prérequis : VirtualBox, Vagrant, Git et environ 10,75 Gio de RAM disponible pour les VM.
 
-## Prérequis
-
-Installer VirtualBox, Vagrant et Git. La configuration réserve environ 10,75 Gio de RAM aux sept VM. Prévoir davantage de mémoire physique pour l'hôte et les applications en cours.
-
-## Démarrage rapide
+À la racine du dépôt :
 
 ```bash
 vagrant validate
 vagrant up
 vagrant ssh infra01 -c "bash /vagrant/scripts/bootstrap-ssh.sh"
 vagrant ssh infra01
+```
+
+Dans la session infra01 :
+
+```bash
 cd /vagrant/ansible-playbooks
 ansible-galaxy collection install -r requirements.yml
 ansible-inventory -i etc/hosts --graph
 ansible -i etc/hosts k8s_cplanes,k8s_workers,haproxy,dns,nfsha -m ping
+ansible-playbook -i etc/hosts playbooks/site.yml
 ```
 
-Voir [`docs/DEPLOIEMENT.md`](docs/DEPLOIEMENT.md) pour le déroulé complet. Pour les vérifications, consultez [`docs/DIAGNOSTIC.md`](docs/DIAGNOSTIC.md).
+Le playbook principal configure BIND9, prépare containerd et les composants Kubernetes, configure HAProxy et NFS, initialise les quatre nœuds, puis applique les ressources du test de persistance.
 
-## Démonstration NFS
-
-Après le déploiement du cluster et la configuration du serveur NFS :
+## Vérifier le résultat
 
 ```bash
-cd /vagrant/ansible-playbooks
-ansible-playbook -i etc/hosts playbooks/apply_nfs_storageclass.yml
-ansible-playbook -i etc/hosts playbooks/manage_nfsha_volumes.yml --ask-become-pass -e "pvname=test-nfsha pvsize=1G"
-ansible-playbook -i etc/hosts playbooks/deploy_nfs_smoke_test.yml
 ansible-playbook -i etc/hosts playbooks/verify_cluster.yml
+kubectl get nodes -o wide
+kubectl get pods -A
+kubectl get storageclass,pv,pvc
+kubectl logs test-nfsha-pod
 ```
 
-Le test doit aboutir à un PVC `Bound`, un Pod de test fonctionnel et un fichier côté serveur NFS. Les résultats doivent être recueillis sur les VM : la présence des manifestes ne prouve pas à elle seule le succès du déploiement.
+Le Pod BusyBox écrit un fichier dans son PVC, dont le PV est hébergé sur le serveur NFS. Vérifier également, sur nfsha, la présence de `/srv/kubernetes/test-volume/test.txt`.
 
-## Présentation
+Pour ajouter ArgoCD :
 
-Ouvrir [`docs/PRESENTATION.md`](docs/PRESENTATION.md) pour le pitch de 3 à 5 minutes, la démonstration et les questions probables.
+```bash
+ansible-playbook -i etc/hosts playbooks/install_argocd.yml
+kubectl get pods,svc -n argocd
+```
 
-## Limites connues
+## Documentation
 
-Ce dépôt constitue un laboratoire pédagogique. La configuration n'a pas été exécutée dans ce contexte contre sept VM réelles. Il faut vérifier les noms des interfaces, le démarrage VirtualBox, le kubeconfig, la liaison PV/PVC, l'accès à l'API derrière HAProxy et la persistance du fichier sur NFS avant d'affirmer que les tests de bout en bout passent. Avec deux control-planes uniquement, ne pas présenter etcd comme tolérant à toutes les pannes.
+- [Architecture](docs/ARCHITECTURE.md)
+- [Guide de déploiement](docs/DEPLOIEMENT.md)
+- [Diagnostic et limites connues](docs/DIAGNOSTIC.md)
+- [Présentation orale (3–5 minutes)](docs/PRESENTATION.md)
+
+## CI et limites connues
+
+GitHub Actions vérifie la syntaxe YAML et Ruby sur chaque push et pull request. Il ne démarre pas les VM et ne prouve pas la disponibilité réelle du cluster. Les commandes `kubectl get nodes`, le test de stockage NFS et l'accès via HAProxy doivent être exécutés dans l'environnement de laboratoire.
+
+Cette version est un laboratoire pédagogique. Deux control-planes ne garantissent pas le quorum etcd si l'un des membres tombe en panne. Éviter de présenter cette topologie comme une architecture de production hautement disponible.
