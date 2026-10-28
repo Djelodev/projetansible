@@ -1,0 +1,63 @@
+---
+- name: Installer NGINX Ingress Controller et publier l'application de démonstration
+  hosts: k8s_cplanes_init
+  become: true
+  tasks:
+    - name: Installer les CRD du contrôleur NGINX
+      ansible.builtin.command: kubectl apply -f https://raw.githubusercontent.com/nginx/kubernetes-ingress/v5.7.0/deploy/crds.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Créer le namespace et le compte de service du contrôleur
+      ansible.builtin.command: kubectl apply -f https://raw.githubusercontent.com/nginx/kubernetes-ingress/v5.7.0/deployments/common/ns-and-sa.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Installer RBAC pour le contrôleur
+      ansible.builtin.command: kubectl apply -f https://raw.githubusercontent.com/nginx/kubernetes-ingress/v5.7.0/deployments/rbac/rbac.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Déployer le contrôleur NGINX
+      ansible.builtin.command: kubectl apply -f https://raw.githubusercontent.com/nginx/kubernetes-ingress/v5.7.0/deployments/deployment/nginx-ingress.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Exposer le contrôleur sur les nœuds avec NodePort
+      ansible.builtin.command: kubectl apply -f https://raw.githubusercontent.com/nginx/kubernetes-ingress/v5.7.0/deployments/service/nodeport.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Copier l'application de démonstration
+      ansible.builtin.copy:
+        src: ../manifests/demo-application.yaml
+        dest: /tmp/demo-application.yaml
+        mode: "0644"
+
+    - name: Déployer le Deployment, Service et Ingress
+      ansible.builtin.command: kubectl apply -f /tmp/demo-application.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Attendre le démarrage des réplicas de démonstration
+      ansible.builtin.command: kubectl rollout status deployment/demo-web -n demo-app --timeout=180s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Afficher le service NodePort du contrôleur
+      ansible.builtin.command: kubectl get service -n nginx-ingress
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ingress_service
+      changed_when: false
+
+    - name: Résultat NodePort
+      ansible.builtin.debug:
+        var: ingress_service.stdout
