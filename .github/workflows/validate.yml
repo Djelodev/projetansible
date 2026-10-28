@@ -24,3 +24,4 @@ jobs:
           ansible-playbook -i ansible-playbooks/etc/hosts --syntax-check ansible-playbooks/playbooks/site.yml
           ansible-playbook -i ansible-playbooks/etc/hosts --syntax-check ansible-playbooks/playbooks/verify_cluster.yml
           ansible-playbook -i ansible-playbooks/etc/hosts --syntax-check ansible-playbooks/playbooks/install_argocd.yml
+          ansible-playbook -i ansible-playbooks/etc/hosts --syntax-check ansible-playbooks/playbooks/install_ingress_nginx.yml
