@@ -1,0 +1,33 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-static
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: test-nfsha-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-static
+  nfs:
+    server: 192.168.56.9
+    path: /srv/kubernetes/test-volume
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-nfsha
+spec:
+  storageClassName: nfs-static
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
