@@ -1,0 +1,41 @@
+---
+- name: Installer ArgoCD dans Kubernetes
+  hosts: k8s_cplanes_init
+  become: true
+  tasks:
+    - name: Créer le namespace ArgoCD
+      ansible.builtin.shell: kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Contrôler si ArgoCD est déjà installé
+      ansible.builtin.command: kubectl get deployment argocd-server -n argocd
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: argocd_status
+      changed_when: false
+      failed_when: false
+
+    - name: Déployer les manifestes officiels ArgoCD
+      ansible.builtin.command: kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: argocd_status.rc != 0
+
+    - name: Exposer le service en NodePort
+      ansible.builtin.command: kubectl patch service argocd-server -n argocd --type merge -p '{"spec":{"type":"NodePort"}}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Afficher le port attribué
+      ansible.builtin.command: kubectl get service argocd-server -n argocd
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: argocd_service
+      changed_when: false
+
+    - name: Résultat
+      ansible.builtin.debug:
+        var: argocd_service.stdout
