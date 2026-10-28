@@ -19,18 +19,41 @@ ansible-inventory -i etc/hosts --graph
 ansible -i etc/hosts k8s_cplanes,k8s_workers,haproxy,dns,nfsha -m ping
 ```
 
-Le script demande une validation interactive pour copier la clé SSH sur chaque VM. Il doit être lancé depuis infra01 avec le compte du laboratoire.
+Le script copie la clé SSH vers chaque VM ; il doit être lancé depuis infra01 avec le compte du laboratoire.
 
-## 3. Lancer l'automatisation
+## 3. Lancer le playbook principal
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
 ansible-playbook -i etc/hosts playbooks/site.yml
 ```
 
-Le playbook installe BIND9, prépare containerd et les paquets Kubernetes, configure HAProxy et NFS, initialise le cluster, joint les autres nœuds et déploie un test NFS. L'exécution demande une connexion Internet et peut durer selon la vitesse de téléchargement.
+Le playbook installe BIND9, prépare containerd et les paquets Kubernetes, configure HAProxy et NFS, initialise le cluster, joint les autres nœuds et déploie un test NFS. L'exécution demande une connexion Internet et peut durer selon les téléchargements.
 
-## 4. Contrôler les résultats
+## 4. Déployer l'application HTTP avec Ingress
+
+```bash
+ansible-playbook -i etc/hosts playbooks/install_ingress_nginx.yml
+kubectl get pods -n nginx-ingress
+kubectl get svc -n nginx-ingress
+kubectl get ingress -n demo-app
+```
+
+Le playbook installe le contrôleur NGINX Ingress, puis applique un Deployment Nginx à deux réplicas, un Service ClusterIP et une ressource Ingress pour le nom d'hôte `demo.esgi.net`.
+
+Relever le NodePort HTTP :
+
+```bash
+kubectl get svc -n nginx-ingress
+```
+
+Tester depuis un poste connecté au réseau Host-Only, en remplaçant `<NODEPORT_HTTP>` par le port affiché :
+
+```bash
+curl -H "Host: demo.esgi.net" http://192.168.56.6:<NODEPORT_HTTP>/
+```
+
+## 5. Vérifier le cluster et NFS
 
 ```bash
 ansible-playbook -i etc/hosts playbooks/verify_cluster.yml
@@ -40,21 +63,20 @@ kubectl get storageclass,pv,pvc
 kubectl logs test-nfsha-pod
 ```
 
-Connectez-vous à nfsha pour confirmer que `/srv/kubernetes/test-volume/test.txt` existe réellement. L'application d'un manifeste ne prouve pas que le Pod a écrit le fichier.
+Sur la VM nfsha, vérifier que `/srv/kubernetes/test-volume/test.txt` existe. L'application du manifeste seule ne prouve pas qu'un fichier a été écrit.
 
-## 5. ArgoCD (optionnel)
+## 6. ArgoCD (optionnel)
 
 ```bash
 ansible-playbook -i etc/hosts playbooks/install_argocd.yml
 kubectl get pods,svc -n argocd
 ```
 
-Identifier le NodePort avec la commande `kubectl get svc`.
-
 ## Dépannage rapide
 
 - VM non démarrée : contrôler la virtualisation matérielle, la mémoire disponible et VirtualBox.
-- Échec SSH : contrôler la connectivité Host-Only et l'installation de la clé depuis infra01.
+- Échec SSH : contrôler le réseau Host-Only et l'installation de la clé depuis infra01.
 - Nœud NotReady : consulter `kubectl get pods -A` et `journalctl -u kubelet`.
 - PVC Pending : vérifier le StorageClass, le PV, le chemin NFS et la connectivité au serveur NFS.
-- API inaccessible : vérifier la configuration HAProxy et exécuter `curl -k https://192.168.56.8:6443/version`.
+- Ingress inaccessible : contrôler les Pods et le NodePort dans le namespace nginx-ingress, puis le champ host de la ressource Ingress.
+- API inaccessible : contrôler HAProxy et tester `curl -k https://192.168.56.8:6443/version`.
