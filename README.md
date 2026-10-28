@@ -1,6 +1,6 @@
 # Projet Ansible — Infrastructure Kubernetes multi-nœuds
 
-Laboratoire pédagogique **Infrastructure as Code** combinant Vagrant, VirtualBox, Ansible, kubeadm, HAProxy, NFS et ArgoCD.
+Laboratoire pédagogique **Infrastructure as Code** combinant Vagrant, VirtualBox, Ansible, kubeadm, HAProxy, NFS, Ingress et ArgoCD.
 
 ## Architecture
 
@@ -37,9 +37,28 @@ ansible -i etc/hosts k8s_cplanes,k8s_workers,haproxy,dns,nfsha -m ping
 ansible-playbook -i etc/hosts playbooks/site.yml
 ```
 
-Le playbook principal configure BIND9, prépare containerd et les composants Kubernetes, configure HAProxy et NFS, initialise les quatre nœuds, puis applique les ressources du test de persistance.
+Le playbook principal configure BIND9, prépare containerd et Kubernetes, configure HAProxy et NFS, initialise les quatre nœuds, puis déploie un test de stockage persistant.
 
-## Vérifier le résultat
+## Application HTTP avec Ingress
+
+Après la réussite du playbook principal, déployer le contrôleur Ingress et l'application web de démonstration :
+
+```bash
+ansible-playbook -i etc/hosts playbooks/install_ingress_nginx.yml
+kubectl get pods -n nginx-ingress
+kubectl get svc -n nginx-ingress
+kubectl get ingress -n demo-app
+```
+
+Récupérer le NodePort HTTP affiché par le Service du contrôleur, puis tester depuis une machine qui accède au réseau Host-Only, en remplaçant `<NODEPORT_HTTP>` par la valeur relevée :
+
+```bash
+curl -H "Host: demo.esgi.net" http://192.168.56.6:<NODEPORT_HTTP>/
+```
+
+Cette ressource illustre le flux Client → Ingress → Service → Deployment/Pods.
+
+## Vérifier le stockage
 
 ```bash
 ansible-playbook -i etc/hosts playbooks/verify_cluster.yml
@@ -49,9 +68,9 @@ kubectl get storageclass,pv,pvc
 kubectl logs test-nfsha-pod
 ```
 
-Le Pod BusyBox écrit un fichier dans son PVC, dont le PV est hébergé sur le serveur NFS. Vérifier également, sur nfsha, la présence de `/srv/kubernetes/test-volume/test.txt`.
+Le Pod BusyBox écrit un fichier dans son PVC, dont le PV est hébergé sur le serveur NFS. Vérifier aussi, sur nfsha, la présence de `/srv/kubernetes/test-volume/test.txt`.
 
-Pour ajouter ArgoCD :
+## ArgoCD
 
 ```bash
 ansible-playbook -i etc/hosts playbooks/install_argocd.yml
@@ -67,6 +86,6 @@ kubectl get pods,svc -n argocd
 
 ## CI et limites connues
 
-GitHub Actions vérifie la syntaxe YAML et Ruby sur chaque push et pull request. Il ne démarre pas les VM et ne prouve pas la disponibilité réelle du cluster. Les commandes `kubectl get nodes`, le test de stockage NFS et l'accès via HAProxy doivent être exécutés dans l'environnement de laboratoire.
+GitHub Actions vérifie la syntaxe YAML, Ruby et des playbooks Ansible à chaque push et pull request. Il ne démarre pas les VM et ne prouve pas la disponibilité réelle du cluster. Il faut vérifier les nœuds Ready, l'accès à l'API derrière HAProxy, le routage HTTP et la persistance NFS dans le laboratoire.
 
 Cette version est un laboratoire pédagogique. Deux control-planes ne garantissent pas le quorum etcd si l'un des membres tombe en panne. Éviter de présenter cette topologie comme une architecture de production hautement disponible.
