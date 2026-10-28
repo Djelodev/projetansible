@@ -1,0 +1,408 @@
+---
+- name: Installer BIND9 sur la machine d'administration
+  hosts: dns
+  become: true
+  tasks:
+    - name: Installer BIND9
+      ansible.builtin.apt:
+        name: bind9
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Déclarer la zone DNS du laboratoire
+      ansible.builtin.copy:
+        dest: /etc/bind/named.conf.local
+        owner: root
+        group: bind
+        mode: "0644"
+        content: |
+          zone "esgi.net" {
+              type master;
+              file "/etc/bind/db.esgi.net";
+          };
+
+    - name: Créer les enregistrements DNS
+      ansible.builtin.copy:
+        dest: /etc/bind/db.esgi.net
+        owner: root
+        group: bind
+        mode: "0644"
+        content: |
+          $TTL 86400
+          @ IN SOA infra01.esgi.net. hostmaster.esgi.net. (
+            2026102801 3600 900 604800 86400 )
+          @            IN NS infra01.esgi.net.
+          infra01      IN A 192.168.56.2
+          ansible      IN A 192.168.56.2
+          k8s-cplane01 IN A 192.168.56.4
+          k8s-cplane02 IN A 192.168.56.5
+          k8s-worker01 IN A 192.168.56.6
+          k8s-worker02 IN A 192.168.56.7
+          hap01        IN A 192.168.56.8
+          nfsha        IN A 192.168.56.9
+
+    - name: Configurer l'écoute et les redirecteurs DNS
+      ansible.builtin.copy:
+        dest: /etc/bind/named.conf.options
+        owner: root
+        group: bind
+        mode: "0644"
+        content: |
+          options {
+              directory "/var/cache/bind";
+              listen-on { 127.0.0.1; 192.168.56.2; };
+              listen-on-v6 { none; };
+              allow-query { localhost; 192.168.56.0/24; };
+              recursion yes;
+              forwarders { 1.1.1.1; 8.8.8.8; };
+              dnssec-validation auto;
+          };
+
+    - name: Vérifier la configuration BIND9
+      ansible.builtin.command: named-checkconf
+      changed_when: false
+
+    - name: Vérifier les données de la zone
+      ansible.builtin.command: named-checkzone esgi.net /etc/bind/db.esgi.net
+      changed_when: false
+
+    - name: Activer BIND9
+      ansible.builtin.service:
+        name: bind9
+        state: restarted
+        enabled: true
+
+- name: Préparer les nœuds Kubernetes
+  hosts: k8s
+  become: true
+  tasks:
+    - name: Installer les prérequis, containerd et le client NFS
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+          - containerd
+          - nfs-common
+          - conntrack
+          - socat
+          - ebtables
+          - ethtool
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Déclarer les modules noyau nécessaires
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        mode: "0644"
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Charger les modules noyau
+      ansible.builtin.command: "modprobe {{ item }}"
+      loop:
+        - overlay
+        - br_netfilter
+      changed_when: false
+
+    - name: Configurer les paramètres réseau du noyau
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        mode: "0644"
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+
+    - name: Appliquer les paramètres sysctl
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+
+    - name: Désactiver le swap
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+
+    - name: Désactiver le swap dans fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].*\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Créer la configuration containerd si absente
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Utiliser systemd comme gestionnaire de cgroups
+      ansible.builtin.lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^\s*SystemdCgroup = false$'
+        line: '            SystemdCgroup = true'
+      notify: redémarrer containerd
+
+    - name: Activer containerd
+      ansible.builtin.service:
+        name: containerd
+        state: started
+        enabled: true
+
+    - name: Préparer le dossier des clés APT
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Ajouter la clé du dépôt Kubernetes v1.36
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        executable: /bin/bash
+
+    - name: Configurer le dépôt APT Kubernetes
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        mode: "0644"
+        content: |
+          deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.36/deb/ /
+
+    - name: Installer kubelet, kubeadm et kubectl
+      ansible.builtin.apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: true
+
+    - name: Geler les paquets Kubernetes
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Activer kubelet
+      ansible.builtin.service:
+        name: kubelet
+        state: started
+        enabled: true
+
+  handlers:
+    - name: redémarrer containerd
+      ansible.builtin.service:
+        name: containerd
+        state: restarted
+
+- name: Configurer HAProxy pour l'API Kubernetes
+  hosts: haproxy
+  become: true
+  tasks:
+    - name: Installer HAProxy
+      ansible.builtin.apt:
+        name: haproxy
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Définir le frontend TCP et ses backends
+      ansible.builtin.copy:
+        dest: /etc/haproxy/haproxy.cfg
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          global
+              log /dev/log local0
+              log /dev/log local1 notice
+              daemon
+              maxconn 2048
+
+          defaults
+              log global
+              mode tcp
+              option tcplog
+              timeout connect 5s
+              timeout client 1m
+              timeout server 1m
+
+          frontend kubernetes_api
+              bind *:6443
+              default_backend kubernetes_control_planes
+
+          backend kubernetes_control_planes
+              balance roundrobin
+              option tcp-check
+              server cplane01 192.168.56.4:6443 check
+              server cplane02 192.168.56.5:6443 check
+      notify: redémarrer haproxy
+
+    - name: Vérifier la syntaxe HAProxy
+      ansible.builtin.command: haproxy -c -f /etc/haproxy/haproxy.cfg
+      changed_when: false
+
+    - name: Activer le service HAProxy
+      ansible.builtin.service:
+        name: haproxy
+        state: started
+        enabled: true
+
+  handlers:
+    - name: redémarrer haproxy
+      ansible.builtin.service:
+        name: haproxy
+        state: restarted
+
+- name: Configurer le serveur NFS
+  hosts: nfsha
+  become: true
+  tasks:
+    - name: Installer le serveur NFS
+      ansible.builtin.apt:
+        name: nfs-kernel-server
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Préparer le répertoire pour le volume de test
+      ansible.builtin.file:
+        path: /srv/kubernetes/test-volume
+        state: directory
+        owner: nobody
+        group: nogroup
+        mode: "0777"
+
+    - name: Déclarer l'export pour le réseau Host-Only
+      ansible.builtin.copy:
+        dest: /etc/exports.d/kubernetes.exports
+        mode: "0644"
+        content: |
+          /srv/kubernetes 192.168.56.0/24(rw,sync,no_subtree_check,root_squash)
+
+    - name: Appliquer les exports NFS
+      ansible.builtin.command: exportfs -ra
+      changed_when: false
+
+    - name: Activer le service NFS
+      ansible.builtin.service:
+        name: nfs-kernel-server
+        state: started
+        enabled: true
+
+- name: Initialiser le premier control-plane
+  hosts: k8s_cplanes_init
+  become: true
+  tasks:
+    - name: Initialiser Kubernetes si nécessaire
+      ansible.builtin.command: >-
+        kubeadm init
+        --control-plane-endpoint 192.168.56.8:6443
+        --apiserver-cert-extra-sans 192.168.56.8
+        --pod-network-cidr 192.168.0.0/16
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Préparer le dossier kubeconfig de vagrant
+      ansible.builtin.file:
+        path: /home/vagrant/.kube
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: "0700"
+
+    - name: Copier le kubeconfig administrateur
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/vagrant/.kube/config
+        remote_src: true
+        owner: vagrant
+        group: vagrant
+        mode: "0600"
+
+    - name: Installer Calico
+      ansible.builtin.command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Créer une commande kubeadm join
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: kube_join_command
+      changed_when: false
+
+    - name: Générer la clé de partage des certificats
+      ansible.builtin.shell: kubeadm init phase upload-certs --upload-certs | tail -n 1
+      args:
+        executable: /bin/bash
+      register: kube_certificate_key
+      changed_when: false
+
+- name: Joindre le deuxième control-plane
+  hosts: k8s_cplanes_join
+  become: true
+  tasks:
+    - name: Joindre le cluster en tant que control-plane
+      ansible.builtin.command: >-
+        {{ hostvars['k8s-cplane01'].kube_join_command.stdout }}
+        --control-plane
+        --certificate-key {{ hostvars['k8s-cplane01'].kube_certificate_key.stdout }}
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+- name: Joindre les deux workers
+  hosts: k8s_workers
+  become: true
+  tasks:
+    - name: Joindre le cluster comme worker
+      ansible.builtin.command: "{{ hostvars['k8s-cplane01'].kube_join_command.stdout }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+- name: Déployer et valider le volume NFS
+  hosts: k8s_cplanes_init
+  become: true
+  tasks:
+    - name: Copier les manifestes de stockage et de test
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/tmp/{{ item | basename }}"
+        mode: "0644"
+      loop:
+        - ../manifests/storageclass-nfs-static.yaml
+        - ../manifests/nfs-smoke-test.yaml
+
+    - name: Appliquer le StorageClass, le PV et le PVC
+      ansible.builtin.command: kubectl apply -f /tmp/storageclass-nfs-static.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Créer le Pod qui écrit sur NFS
+      ansible.builtin.command: kubectl apply -f /tmp/nfs-smoke-test.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Attendre que le Pod soit prêt
+      ansible.builtin.command: kubectl wait --for=condition=Ready pod/test-nfsha-pod --timeout=180s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Lire le fichier écrit par le Pod
+      ansible.builtin.command: kubectl exec test-nfsha-pod -- cat /data/test.txt
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nfs_test_content
+      changed_when: false
+
+    - name: Afficher la preuve d'écriture NFS
+      ansible.builtin.debug:
+        msg: "{{ nfs_test_content.stdout }}"
